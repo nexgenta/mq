@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS `mq_queues`;
+
+CREATE TABLE `mq_queues` (
+  `queue_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `queue_name` varchar(64) NOT NULL,
+  `creator_host` varchar(255) NOT NULL,
+  `creator_uid` int(10) unsigned NOT NULL,
+  `creator_gid` int(10) unsigned NOT NULL,
+  `created` datetime NOT NULL,
+  PRIMARY KEY (`queue_id`),
+  UNIQUE KEY `queue_name` (`queue_name`),
+  KEY `creator_host` (`creator_host`),
+  KEY `creator_uid` (`creator_uid`),
+  KEY `creator_gid` (`creator_gid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
