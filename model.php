@@ -58,12 +58,12 @@ class MQModel extends Model
 	
 	protected function queueDataFromName($name)
 	{
-		return $this->db->getRow('SELECT * FROM {mq_queues} WHERE "queue_name" = ?', $name);
+		return $this->db->row('SELECT * FROM {mq_queues} WHERE "queue_name" = ?', $name);
 	}
 
 	protected function queueDataFromId($id)
 	{
-		return $this->db->getRow('SELECT * FROM {mq_queues} WHERE "queue_id" = ?', $id);
+		return $this->db->row('SELECT * FROM {mq_queues} WHERE "queue_id" = ?', $id);
 	}
 	
 	public function queueFromName($name)
@@ -150,11 +150,11 @@ class MQModel extends Model
 		}
 		do
 		{
-			if($this->db->getOne('SELECT "msg_id" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ?', 'wait'))
+			if($this->db->value('SELECT "msg_id" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ?', 'wait'))
 			{
 				$this->db->exec('UPDATE ' . $this->db->quoteTable('mq_q_' . $queueId) . ' SET "msg_state" = ?, "msg_started" = ' . $this->db->now() . ', "msg_processor_scheme" = ?, "msg_processor_uuid" = ?, "msg_processor_host" = ?, "msg_processor_pid" = ? WHERE "msg_state" = ? AND ("msg_process_at" IS NULL OR "msg_process_at" <= NOW()) LIMIT 1',
 					'pending-process', $userScheme, $userUuid, $hostname, $pid, 'wait');
-				if(($row = $this->db->getRow('SELECT "msg_uuid" AS "uuid", "msg_object_uuid" AS "object", "msg_request" AS "request" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ? AND "msg_processor_host" = ? AND "msg_processor_pid" = ?', 'pending-process', $hostname, $pid)))
+				if(($row = $this->db->row('SELECT "msg_uuid" AS "uuid", "msg_object_uuid" AS "object", "msg_request" AS "request" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ? AND "msg_processor_host" = ? AND "msg_processor_pid" = ?', 'pending-process', $hostname, $pid)))
 				{
 					return $row;
 				}
