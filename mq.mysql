@@ -3,13 +3,15 @@ DROP TABLE IF EXISTS `mq_queues`;
 CREATE TABLE `mq_queues` (
   `queue_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   `queue_name` varchar(64) NOT NULL,
-  `creator_host` varchar(255) NOT NULL,
-  `creator_uid` int(10) unsigned NOT NULL,
-  `creator_gid` int(10) unsigned NOT NULL,
+  `creator_scheme` varchar(32) NOT NULL,
+  `creator_uuid` varchar(36) NOT NULL,
+  `creator_cluster` varchar(64) DEFAULT NULL,
+  `creator_instance` varchar(255) DEFAULT NULL,
   `created` datetime NOT NULL,
   PRIMARY KEY (`queue_id`),
   UNIQUE KEY `queue_name` (`queue_name`),
-  KEY `creator_host` (`creator_host`),
-  KEY `creator_uid` (`creator_uid`),
-  KEY `creator_gid` (`creator_gid`)
+  KEY `creator_scheme` (`creator_scheme`),
+  KEY `creator_uuid` (`creator_uuid`),
+  KEY `creator_cluster` (`creator_cluster`),
+  KEY `creator_instance` (`creator_instance`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
