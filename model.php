@@ -41,10 +41,12 @@ class MQAlreadyExistsException extends Exception
 
 class MQModel extends Model
 {
+	protected $cluster;
+	
 	public static function getInstance($args = null, $className = null)
 	{
 		if(null === $args) $args = array();
-		if(!isset($args['db'])) $args['db'] = DB_MQ_IRI;
+		if(!isset($args['db'])) $args['db'] = MQ_IRI;
 		if(null === $className)
 		{
 			$className = 'MQModel';
@@ -66,6 +68,16 @@ class MQModel extends Model
 		return $this->db->row('SELECT * FROM {mq_queues} WHERE "queue_id" = ?', $id);
 	}
 	
+	public function __construct($args)
+	{
+		parent::__construct($args);
+		if(defined('CLUSTER_IRI'))
+		{
+			require_once(APPS_ROOT . 'cluster/model.php');
+			$this->cluster = ClusterModel::getInstance();
+		}
+	}
+	
 	public function queueFromName($name)
 	{
 		if(!($data = $this->queueDataFromName($name)))
@@ -75,24 +87,21 @@ class MQModel extends Model
 		return MQueue::queueFromData($this, $data);
 	}
 	
-	public function createQueue($name)
+	public function createQueue($name, $request)
 	{
-		$uname = php_uname('n');
-		if(function_exists('posix_geteuid'))
+		$cluster = null;
+		$instance = null;
+		$scheme = 'null';
+		$uuid = null;
+		if(isset($request->session->user))
 		{
-			$uid = posix_geteuid();
+			$scheme = $request->session->user['scheme'];
+			$uuid = $request->session->user['uuid'];
 		}
-		else
+		if($this->cluster)
 		{
-			$uid = getmyuid();
-		}
-		if(function_exists('posix_getegid'))
-		{
-			$gid = posix_getegid();
-		}
-		else
-		{
-			$gid = getmygid();
+			$cluster = $this->cluster->clusterName;
+			$instance = $this->cluster->instanceName;
 		}
 		do
 		{
@@ -105,9 +114,10 @@ class MQModel extends Model
 			}
 			$this->db->insert('mq_queues', array(
 				'queue_name' => $name,
-				'creator_host' => $uname,
-				'creator_uid' => $uid,
-				'creator_gid' => $gid,
+				'creator_cluster' => $cluster,
+				'creator_instance' => $instance,
+				'creator_scheme' => $scheme,
+				'creator_uuid' => $uuid,
 				'@created' => $this->db->now(),
 			));
 			$id = $this->db->insertId();
@@ -121,42 +131,86 @@ class MQModel extends Model
 		return null;
 	}
 	
-	public function submit($queueId, $request, $objectUuid = null, $userScheme = null, $userUuid = null, $scheduleDate = null)
+	public function submit($queueId, $jobRequest, $request, $objectUuid = null, $scheduleDate = null, $restrictInstance = null, $restrictCluster = null)
 	{
-		if(is_array($request) || is_object($request))
+		$userScheme = null;
+		$userUuid = null;
+		if(isset($request->session->user))
 		{
-			$request = json_encode($request);
+			$userScheme = $request->session->user['scheme'];
+			$userUuid = $request->session->user['uuid'];
+		}
+		if($this->cluster)
+		{
+			if($restrictInstance)
+			{
+				$restrictCluster = $this->cluster->clusterNameOfInstance($restrictInstance);
+			}
+		}
+		if(is_array($jobRequest) || is_object($jobRequest))
+		{
+			$jobRequest = json_encode($jobRequest);
 		}
 		$uuid = UUID::generate();
 		$this->db->insert('mq_q_' . $queueId, array(
 			'msg_uuid' => $uuid,
 			'msg_object_uuid' => $objectUuid,
 			'msg_state' => 'wait',
-			'msg_request' => $request,
+			'msg_request' => $jobRequest,
 			'msg_process_at' => $scheduleDate,
 			'msg_submitter_scheme' => $userScheme,
 			'msg_submitter_uuid' => $userUuid,
+			'msg_restrict_cluster' => $restrictCluster,
+			'msg_restrict_instance' => $restrictInstance,
 		));
 		return $uuid;
 	}
 	
-	public function nextJob($queueId, $userScheme = null, $userUuid = null, $hostname = null, $pid = null, $timeout = 30)
+	public function nextJob($queueId, $userScheme = null, $userUuid = null, $pid = null, $timeout = 30)
 	{
-		if(!strlen($hostname)) $hostname = substr(php_uname('n'), 0, 64);
 		if(empty($pid)) $pid = getmypid();
 		if($timeout !== null)
 		{
 			$timeout += time();
 		}
+		$cluster = null;
+		$instance = null;
+		if($this->cluster)
+		{
+			$cluster = $this->cluster->clusterName;
+			$instance = $this->cluster->instanceName;
+		}
+		$qterm = '"msg_state" = ? AND ("msg_process_at" IS NULL OR "msg_process_at" <= NOW())';
+		$qargs[] = 'wait';
+		if($cluster)
+		{
+			$qterm .= ' AND ("msg_restrict_cluster" = ? OR "msg_restrict_cluster" IS NULL)';
+			$qargs[] = $cluster;
+		}
+		if($cluster)
+		{
+			$qterm .= ' AND ("msg_restrict_instance" = ? OR "msg_restrict_instance" IS NULL)';
+			$qargs[] = $instance;
+		}
 		do
 		{
-			if($this->db->value('SELECT "msg_id" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ?', 'wait'))
+			if($this->db->valueArray('SELECT "msg_id" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE ' . $qterm, $qargs))
 			{
-				$this->db->exec('UPDATE ' . $this->db->quoteTable('mq_q_' . $queueId) . ' SET "msg_state" = ?, "msg_started" = ' . $this->db->now() . ', "msg_processor_scheme" = ?, "msg_processor_uuid" = ?, "msg_processor_host" = ?, "msg_processor_pid" = ? WHERE "msg_state" = ? AND ("msg_process_at" IS NULL OR "msg_process_at" <= NOW()) LIMIT 1',
-					'pending-process', $userScheme, $userUuid, $hostname, $pid, 'wait');
-				if(($row = $this->db->row('SELECT "msg_uuid" AS "uuid", "msg_object_uuid" AS "object", "msg_request" AS "request" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ? AND "msg_processor_host" = ? AND "msg_processor_pid" = ?', 'pending-process', $hostname, $pid)))
+				$args = array_merge(array('pending-process', $userScheme, $userUuid, $cluster, $instance, $pid), $qargs);
+				$this->db->vexec('UPDATE ' . $this->db->quoteTable('mq_q_' . $queueId) . ' SET "msg_state" = ?, "msg_started" = ' . $this->db->now() . ', "msg_processor_scheme" = ?, "msg_processor_uuid" = ?, "msg_processor_cluster" = ?, "msg_processor_instance" = ?, "msg_processor_pid" = ? WHERE ' . $qterm . ' LIMIT 1', $args);
+				if($instance)
 				{
-					return $row;
+					if(($row = $this->db->row('SELECT "msg_uuid" AS "uuid", "msg_object_uuid" AS "object", "msg_request" AS "request" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ? AND "msg_processor_instance" = ? AND "msg_processor_pid" = ?', 'pending-process', $instance, $pid)))
+					{
+						return $row;
+					}
+				}
+				else
+				{
+					if(($row = $this->db->row('SELECT "msg_uuid" AS "uuid", "msg_object_uuid" AS "object", "msg_request" AS "request" FROM ' . $this->db->quoteTable('mq_q_' . $queueId) . ' WHERE "msg_state" = ? AND "msg_processor_pid" = ?', 'pending-process', $pid)))
+					{
+						return $row;
+					}				
 				}
 			}
 			$now = time();			
@@ -203,9 +257,12 @@ class MQModel extends Model
 					' "msg_completed" DATETIME DEFAULT NULL, ' .
 					' "msg_submitter_scheme" VARCHAR(16) DEFAULT NULL, ' .
 					' "msg_submitter_uuid" VARCHAR(36) DEFAULT NULL, ' .
+					' "msg_restrict_cluster" VARCHAR(64) DEFAULT NULL, ' . 
+					' "msg_restrict_instance" VARCHAR(255) DEFAULT NULL, ' . 
 					' "msg_processor_scheme" VARCHAR(16) DEFAULT NULL, ' . 
 					' "msg_processor_uuid" VARCHAR(36) DEFAULT NULL, ' . 
-					' "msg_processor_host" VARCHAR(64) DEFAULT NULL, ' . 
+					' "msg_processor_cluster" VARCHAR(64) DEFAULT NULL, ' . 
+					' "msg_processor_instance" VARCHAR(255) DEFAULT NULL, ' . 
 					' "msg_processor_pid" BIGINT UNSIGNED DEFAULT NULL, ' . 
 					' PRIMARY KEY ("msg_id"), ' .
 					' UNIQUE ("msg_uuid"), ' .
@@ -214,9 +271,12 @@ class MQModel extends Model
 					' INDEX ("msg_process_at"), ' .
 					' INDEX ("msg_submitter_scheme"), ' .
 					' INDEX ("msg_submitter_uuid"), ' .
+					' INDEX ("msg_restrict_cluster"), ' .
+					' INDEX ("msg_restrict_instance"), ' .
 					' INDEX ("msg_processor_scheme"), ' .
 					' INDEX ("msg_processor_uuid"), ' .
-					' INDEX ("msg_processor_host") ' .
+					' INDEX ("msg_processor_cluster"), ' .
+					' INDEX ("msg_processor_instance") ' .
 					')');
 				return true;
 			default:
@@ -255,10 +315,10 @@ class MQueue
 		$this->id = $data['queue_id'];
 		$this->name = $data['queue_name'];
 	}
-	
-	public function submit($request, $objectUuid = null, $userScheme = null, $userUuid = null, $scheduleDate = null)
+
+	public function submit($jobRequest, $request, $objectUuid = null, $scheduleDate = null, $restrictInstance = null, $restrictCluster = null)
 	{
-		return $this->model->submit($this->id, $request, $objectUuid, $userScheme, $userUuid, $scheduleDate);
+		return $this->model->submit($this->id, $jobRequest, $request, $objectUuid, $scheduleDate, $restrictInstance, $restrictCluster);
 	}
 	
 	public function nextJob($userScheme = null, $userUuid = null, $hostname = null, $pid = null, $timeout = 30, $jobClass = null)
