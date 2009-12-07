@@ -87,7 +87,7 @@ class MQDespatch extends CommandLine
 		return true;
 	}
 	
-	protected function perform___CLI__()
+	public function main($args)
 	{
 		global $INITIAL_APP;
 		
